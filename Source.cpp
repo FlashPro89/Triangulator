@@ -50,6 +50,13 @@ struct EDGEKEY
 std::multimap< float, unsigned int > rawEdges;
 std::multimap< float, unsigned int > finalEdges;
 
+float edgeLenght2(unsigned short v0, unsigned short v1)
+{
+	D3DXVECTOR2 d = points[v1] - points[v0];
+	return D3DXVec2LengthSq(&d);
+	//return d.x * d.x + d.y * d.y;
+}
+
 float edgeLenght( unsigned short v0, unsigned short v1 )
 {
 	D3DXVECTOR2 d = points[v1] - points[v0];
@@ -158,7 +165,7 @@ void runTriangulation()
 	{
 		for (unsigned int j = i + 1; j < pointsNum; j++)
 		{
-			rawEdges.insert( std::pair<float, unsigned int> ( edgeLenght(i, j), KEYGEN(i, j)) );
+			rawEdges.insert( std::pair<float, unsigned int> ( edgeLenght2(i, j), KEYGEN(i, j)) );
 		}
 	}
 
@@ -191,9 +198,9 @@ void runTriangulation()
 		if (!intersected)
 		{
 			finalEdges.insert( std::pair< float, unsigned int >( it->first, it->second ) );
-		//	it = rawEdges.erase( it );
+			it = rawEdges.erase( it );
 		}
-		//else
+		else
 			it++;
 	}
 }
@@ -287,8 +294,12 @@ bool frame_move()
 	}
 
 	if (input.isKeyDown(DIK_SPACE) )
-	{
 		runTriangulation();
+
+	if (input.isKeyDown(DIK_C))
+	{
+		cleanUpTriangulation();
+		pointsNum = 0;
 	}
 
 	if (input.isKeyDown(DIK_R))
