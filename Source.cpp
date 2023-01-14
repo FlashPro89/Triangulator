@@ -5,6 +5,7 @@
 #include <time.h>
 #include <map>
 #include <math.h>
+#include "poly2tri/poly2tri.h"
 
 #define FVF D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_PSIZE
 
@@ -19,7 +20,7 @@ struct RHWVertex
 	DWORD diffuse;
 };
 
-#define LINEBBUFFERSZ 2048
+#define LINEBBUFFERSZ 0xFFFFF
 #define PT_LINELIST 0
 #define PT_UNSELECTED -1
 #define PT_POINTLIST 1
@@ -29,9 +30,8 @@ unsigned int vvBufferPos = 0;
 char pt = -1;
 gInput input;
 
-#define MAXPOINTS 1024
-D3DXVECTOR2 points[MAXPOINTS];
-unsigned int pointsNum = 0;
+std::vector<D3DXVECTOR2> points;
+std::vector<D3DXVECTOR2> stainer_points;
 
 struct EDGEKEY
 {
@@ -49,12 +49,15 @@ struct EDGEKEY
 
 std::multimap< float, unsigned int > rawEdges;
 std::multimap< float, unsigned int > finalEdges;
+// for p2t lib:
+p2t::CDT *c = nullptr;
+std::vector<p2t::Triangle *> tris_vec;
+std::vector<p2t::Point *> polyline;
 
-float edgeLenght2(unsigned short v0, unsigned short v1)
+float edgeLenght2(unsigned short v0, unsigned short v1, const std::vector<D3DXVECTOR2> &in_points)
 {
-	D3DXVECTOR2 d = points[v1] - points[v0];
+	D3DXVECTOR2 d = in_points[v1] - in_points[v0];
 	return D3DXVec2LengthSq(&d);
-	//return d.x * d.x + d.y * d.y;
 }
 
 float edgeLenght( unsigned short v0, unsigned short v1 )
@@ -63,10 +66,22 @@ float edgeLenght( unsigned short v0, unsigned short v1 )
 	return sqrtf( d.x * d.x + d.y * d.y );
 }
 
+
+
 void cleanUpTriangulation()
 {
 	rawEdges.clear();
 	finalEdges.clear();
+	tris_vec.clear();
+	for (int i = 0; i < polyline.size(); i++)
+		delete polyline[i];
+	polyline.clear();
+}
+
+void clearPoints()
+{
+	points.clear();
+	stainer_points.clear();
 }
 
 #define EPSILON 0.0001f
@@ -158,14 +173,18 @@ void runTriangulation()
 {
 	cleanUpTriangulation();
 
-	if (pointsNum <= 3)
+	if (points.size() + stainer_points.size() <= 3)
 		return;
 
-	for (unsigned int i = 0; i < pointsNum; i++)
+	std::vector<D3DXVECTOR2> all_points;
+	all_points.insert(all_points.begin(), points.begin(), points.end());
+	all_points.insert(all_points.end(), stainer_points.begin(), stainer_points.end());
+
+	for (unsigned int i = 0; i < all_points.size(); i++)
 	{
-		for (unsigned int j = i + 1; j < pointsNum; j++)
+		for (unsigned int j = i + 1; j < all_points.size(); j++)
 		{
-			rawEdges.insert( std::pair<float, unsigned int> ( edgeLenght2(i, j), KEYGEN(i, j)) );
+			rawEdges.insert( std::pair<float, unsigned int> ( edgeLenght2(i, j, all_points), KEYGEN(i, j)) );
 		}
 	}
 
@@ -186,8 +205,8 @@ void runTriangulation()
 			p2 = KEYGETLOW(itf->second);
 			p3 = KEYGETHIGH(itf->second);
 
-			if ( testIntersection( points[p0].x, points[p0].y, points[p1].x, points[p1].y,
-					points[p2].x, points[p2].y, points[p3].x, points[p3].y ) == true )
+			if ( testIntersection( all_points[p0].x, all_points[p0].y, all_points[p1].x, all_points[p1].y,
+				all_points[p2].x, all_points[p2].y, all_points[p3].x, all_points[p3].y ))
 			{
 				intersected = true;
 				break;
@@ -203,6 +222,28 @@ void runTriangulation()
 		else
 			it++;
 	}
+}
+
+void runTriangulationByLib()
+{
+	cleanUpTriangulation();
+
+	if (points.size() + stainer_points.size() <= 3)
+		return;
+
+	polyline.reserve(points.size());
+	for (int i = 0; i < points.size(); i++)
+		polyline.push_back(new p2t::Point(points[i].x, points[i].y));
+
+	if (c)
+		delete c;
+	c = new p2t::CDT(polyline);
+	
+	for (int i = 0; i < stainer_points.size(); i++)
+		c->AddPoint(new p2t::Point(stainer_points[i].x, stainer_points[i].y));
+	
+	c->Triangulate();
+	tris_vec = std::move(c->GetTriangles());
 }
 
 void batch_fire()
@@ -225,6 +266,17 @@ void batch_fire()
 	pt = PT_UNSELECTED;
 }
 
+void batch_point(const D3DXVECTOR2 &v, float size, DWORD color)
+{
+	if (vvBufferPos != 0)
+		if (pt != PT_POINTLIST)
+			batch_fire();
+	pt = PT_POINTLIST;
+
+	vvBuffer[vvBufferPos++] = RHWVertex(D3DXVECTOR3(v.x,
+		v.y, 0.5f), color, size);
+}
+
 void batch_line(const D3DXVECTOR2& v0, const D3DXVECTOR2& v1, DWORD color)
 {
 	if (vvBufferPos != 0)
@@ -243,15 +295,22 @@ void batch_line(const D3DXVECTOR2& v0, const D3DXVECTOR2& v1, DWORD color)
 
 }
 
-void batch_point( const D3DXVECTOR2& v, float size, DWORD color )
+void batch_line(const p2t::Point *p0, const p2t::Point *p1, DWORD color)
 {
-	if (vvBufferPos != 0)
-		if ( pt != PT_POINTLIST )
-			batch_fire();
-	pt = PT_POINTLIST;
+	batch_line(
+		D3DXVECTOR2(static_cast<float>(p0->x), static_cast<float>(p0->y)), 
+		D3DXVECTOR2(static_cast<float>(p1->x), static_cast<float>(p1->y)), color);
+}
 
-	vvBuffer[vvBufferPos++] = RHWVertex(D3DXVECTOR3(v.x,
-		v.y, 0.5f), color, size);
+void batch_triangle(p2t::Triangle *triangle)
+{
+	auto pt0 = triangle->GetPoint(0);
+	auto pt1 = triangle->GetPoint(1);
+	auto pt2 = triangle->GetPoint(2);
+
+	batch_line(pt0, pt1, 0xFFFFFFFF);
+	batch_line(pt1, pt2, 0xFFFFFFFF);
+	batch_line(pt2, pt0, 0xFFFFFFFF);
 }
 
 float randomize(float min, float max)
@@ -273,12 +332,14 @@ void batch_circle(const D3DXVECTOR2& v, float r, DWORD color, unsigned char segm
 	}
 }
 
-void addPoint(const D3DXVECTOR2& point)
+void addPoint(const D3DXVECTOR2 &point)
 {
-	points[pointsNum++] = point;
+	points.push_back(point);
+}
 
-	if (pointsNum >= MAXPOINTS)
-		pointsNum = 0;
+void addSteiner(const D3DXVECTOR2 &point)
+{
+	stainer_points.push_back(point);
 }
 
 bool frame_move()
@@ -293,28 +354,55 @@ bool frame_move()
 		addPoint( D3DXVECTOR2((float)pt.x, (float)pt.y) );
 	}
 
-	if (input.isKeyDown(DIK_SPACE) )
-		runTriangulation();
+	if (input.isMouseDown(1))
+	{
+		POINT pt;
+		GetCursorPos(&pt);
+		ScreenToClient(hwnd, &pt);
+		addSteiner(D3DXVECTOR2((float)pt.x, (float)pt.y));
+	}
 
 	if (input.isKeyDown(DIK_C))
 	{
 		cleanUpTriangulation();
-		pointsNum = 0;
+		clearPoints();
+	}
+
+	if (input.isKeyDown(DIK_F))
+	{
+		cleanUpTriangulation();
+		clearPoints();
+
+		for (int i = 0; i < 800; i += 50) 
+		{
+			for (int j = 0; j < 600; j += 50)
+			{
+				if (i == 0 || i == 799 || j == 0 || j == 599)
+					addSteiner(D3DXVECTOR2(i + 50.f, j + 50.f));
+				else
+					addPoint(D3DXVECTOR2(i + 50.f, j + 50.f));
+			}
+		}
 	}
 
 	if (input.isKeyDown(DIK_R))
 	{
-		pointsNum = 0;
-		
-		for (int i = 0; i < 800; i += 50)
-			for (int j = 0; j < 600; j += 50)
-				addPoint(D3DXVECTOR2(i + 50.f, j + 50.f));
-		
-		//for( int i = 0; i < 128; i++ )
-		//	addPoint( D3DXVECTOR2( randomize(10.f, d3d9_GetBBWidth() - 10.f), randomize(10.f, d3d9_GetBBHeight() - 10.f) ) );
-		
-		runTriangulation();
+		cleanUpTriangulation();
+		clearPoints();
+
+		addPoint(D3DXVECTOR2(10, 10));
+		addPoint(D3DXVECTOR2(d3d9_GetBBWidth() - 10, 10));
+		addPoint(D3DXVECTOR2(d3d9_GetBBWidth() - 10, d3d9_GetBBHeight() - 10));
+		addPoint(D3DXVECTOR2(10, d3d9_GetBBHeight() - 10));
+
+		for (int i = 0; i < 10000; i++)
+			addSteiner(D3DXVECTOR2(randomize(20, d3d9_GetBBWidth() - 20), randomize(20, d3d9_GetBBHeight() - 20)));
 	}
+
+	if (input.isKeyDown(DIK_T))
+		runTriangulationByLib();
+	if (input.isKeyDown(DIK_SPACE))
+		runTriangulation();
 
 	return true;
 }
@@ -328,12 +416,26 @@ void frame_render()
 	
 	pD3DDev9->Clear(0, 0, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFF7f7f7f, 1.0f, 0);
 
+	if (tris_vec.size() > 0)
+	{
+		auto it = tris_vec.begin();
+		while (it != tris_vec.end())
+		{
+			batch_triangle(*it);
+			it++;
+		}
+	}
+
 	if (input.isKeyPressed(DIK_E))
 	{
 		auto it = rawEdges.begin();
 		while (it != rawEdges.end())
 		{
-			batch_line(points[KEYGETLOW(it->second)], points[KEYGETHIGH(it->second)], 0xFFFF0000);
+			int i0 = KEYGETLOW(it->second);
+			int i1 = KEYGETHIGH(it->second);
+			batch_line(
+				i0 < points.size() ? points[i0] : stainer_points[i0 - points.size()], 
+				i1 < points.size() ? points[i1] : stainer_points[i1 - points.size()], 0xFFFF0000);
 			it++;
 		}
 	}
@@ -342,14 +444,20 @@ void frame_render()
 		auto it = finalEdges.begin();
 		while (it != finalEdges.end())
 		{
-			batch_line(points[KEYGETLOW(it->second)], points[KEYGETHIGH(it->second)], 0xFFFF0000);
+			int i0 = KEYGETLOW(it->second);
+			int i1 = KEYGETHIGH(it->second);
+			batch_line(
+				i0 < points.size() ? points[i0] : stainer_points[i0 - points.size()], 
+				i1 < points.size() ? points[i1] : stainer_points[i1 - points.size()], 0xFFFF0000);
 			it++;
 		}
 	}
 	batch_fire();
 
-	for (unsigned int i = 0; i < pointsNum; i++)
-		batch_point(points[i], 10.f, 0xFF00FFFF);
+	for (unsigned int i = 0; i < points.size(); i++)
+		batch_point(points[i], 2.f, 0xFF00FFFF);
+	for (unsigned int i = 0; i < stainer_points.size(); i++)
+		batch_point(stainer_points[i], 2.f, 0xFFFF00FF);
 	
 	batch_fire();
 
@@ -367,7 +475,8 @@ int main()
 {
 	srand((unsigned int)time(0));
 
-	testIntersection(0, 0, 100, 100, 400, 300, 600, 500);
+	points.reserve(0xFFFF);
+	stainer_points.reserve(0xFFFF);
 
 	try
 	{

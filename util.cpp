@@ -40,7 +40,7 @@ void wnd_create(const char* title, int w, int h)
 				  "UTIL_LIB_WND_CLS", NULL };
 
 	if (!RegisterClassEx(&wc))
-		throw("Ошибка при регистрации класса окна!");
+		throw("Can't register window class!");
 
 	DWORD wStyle = WIND_STYLE;
 	RECT rect;
@@ -50,9 +50,9 @@ void wnd_create(const char* title, int w, int h)
 	rect.bottom = h;
 	AdjustWindowRect(&rect, wStyle, false);
 
-	hwnd = CreateWindowEx(0, "UTIL_LIB_WND_CLS", title, wStyle, 0, 0, rect.right, rect.bottom, 0, 0, 0, 0);
+	hwnd = CreateWindowEx(0, "UTIL_LIB_WND_CLS", title, wStyle, 0, 0, rect.right - rect.left, rect.bottom - rect.top, 0, 0, 0, 0);
 	if( ! hwnd )
-		throw( "Ошибка при создании окна!" );
+		throw( "Can't create window!" );
 
 	l_width = w;
 	l_height = h;
